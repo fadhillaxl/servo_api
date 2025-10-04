@@ -17,7 +17,7 @@ app = FastAPI(
 )
 
 # GPIO pins array - add or remove pins as needed
-gpio_pins = [13, 18, 19, 26]
+gpio_pins = [13, 6, 19, 26]
 
 # Global servo state tracking
 servo_states = {}
