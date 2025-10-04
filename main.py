@@ -56,6 +56,9 @@ class ServoResponse(BaseModel):
     servo_id: Optional[int] = None
     angle: Optional[int] = None
 
+class ServoStatusResponse(BaseModel):
+    servo: Dict[str, ServoStatus]
+
 # Initialize servos
 def initialize_servos():
     """Initialize all servos and set up state tracking"""
@@ -140,18 +143,18 @@ async def list_servos() -> List[ServoStatus]:
     return servo_list
 
 @app.get("/servos/status", summary="Get All Servo Status")
-async def get_servo_status() -> Dict[str, ServoStatus]:
+async def get_servo_status() -> ServoStatusResponse:
     """Get current status of all servos"""
     status_dict = {}
     for servo_id, state in servo_states.items():
-        status_dict[f"servo_{servo_id}"] = ServoStatus(
+        status_dict[str(servo_id)] = ServoStatus(
             servo_id=servo_id,
             gpio_pin=state["gpio_pin"],
             current_angle=state["current_angle"],
             is_active=state["is_active"],
             last_updated=state["last_updated"]
         )
-    return status_dict
+    return ServoStatusResponse(servo=status_dict)
 
 @app.get("/servos/{servo_id}/status", summary="Get Single Servo Status")
 async def get_single_servo_status(servo_id: int) -> ServoStatus:
