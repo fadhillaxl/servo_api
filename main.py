@@ -108,8 +108,8 @@ class ServoStatusResponse(BaseModel):
 class ServoConfig(BaseModel):
     detach_enabled: bool = Field(default=True, description="Enable auto-detach to reduce jitter")
     hold_time: float = Field(default=1.0, ge=0.1, le=10.0, description="Time to hold position before detaching (seconds)")
-    min_pulse_width: float = Field(default=0.0005, ge=0.0001, le=0.002, description="Minimum pulse width in seconds (0.1ms to 2ms)")
-    max_pulse_width: float = Field(default=0.0025, ge=0.002, le=0.003, description="Maximum pulse width in seconds (2ms to 3ms)")
+    min_pulse_width: float = Field(default=0.0001, ge=0.0001, le=0.002, description="Minimum pulse width in seconds (0.1ms to 2ms)")
+    max_pulse_width: float = Field(default=0.0005, ge=0.002, le=0.003, description="Maximum pulse width in seconds (2ms to 3ms)")
     hold_mode: str = Field(default="auto", description="Servo hold mode: 'auto' (auto-detach), 'hold' (always powered), 'release' (always released)")
     smooth_enabled: bool = Field(default=False, description="Enable smooth movement with gradual position changes")
     smooth_steps: int = Field(default=10, ge=3, le=50, description="Number of steps for smooth movement")
