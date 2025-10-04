@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from gpiozero import Servo
 from typing import Dict, List, Optional
+from contextlib import asynccontextmanager
 import warnings
 import time
 import threading
@@ -10,12 +11,6 @@ import uvicorn
 # Suppress gpiozero warnings for cleaner output
 warnings.filterwarnings("ignore", category=UserWarning, module="gpiozero")
 
-app = FastAPI(
-    title="Servo Control API",
-    description="REST API for controlling multiple servos on Raspberry Pi",
-    version="1.0.0"
-)
-
 # GPIO pins array - add or remove pins as needed
 gpio_pins = [13, 6, 19, 26]
 
@@ -23,6 +18,23 @@ gpio_pins = [13, 6, 19, 26]
 servo_states = {}
 servos = {}
 servo_lock = threading.Lock()
+
+# Lifespan event handler for startup and shutdown
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Initialize servos
+    initialize_servos()
+    yield
+    # Shutdown: Cleanup servos
+    cleanup_servos()
+
+# Create FastAPI app with lifespan handler
+app = FastAPI(
+    title="Servo Control API",
+    description="REST API for controlling multiple servos on Raspberry Pi",
+    version="1.0.0",
+    lifespan=lifespan
+)
 
 # Pydantic models for request/response
 class ServoMoveRequest(BaseModel):
@@ -49,7 +61,13 @@ def initialize_servos():
     """Initialize all servos and set up state tracking"""
     global servos, servo_states
     
+    # First cleanup any existing servos to prevent GPIO conflicts
+    cleanup_servos()
+    
     print("Initializing servos for API...")
+    servos.clear()
+    servo_states.clear()
+    
     for i, pin in enumerate(gpio_pins, 1):
         try:
             servos[i] = Servo(pin, min_pulse_width=0.5/1000, max_pulse_width=2.5/1000)
@@ -90,9 +108,6 @@ def set_servo_angle(servo_id: int, angle: int, update_state: bool = True):
             servo_states[servo_id]["last_updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
     
     time.sleep(0.5)  # Give servo time to reach target
-
-# Initialize servos on startup
-initialize_servos()
 
 # API Endpoints
 
@@ -246,18 +261,22 @@ async def center_all_servos() -> ServoResponse:
 # Cleanup function
 def cleanup_servos():
     """Cleanup all servos on shutdown"""
+    global servos, servo_states
+    
+    if not servos:
+        return
+        
     print("Cleaning up servos...")
-    for servo_id, servo in servos.items():
+    for servo_id, servo in list(servos.items()):
         try:
             servo.detach()
-            print(f"Servo {servo_id} detached")
+            print(f"  Servo {servo_id} detached")
         except Exception as e:
-            print(f"Error detaching servo {servo_id}: {e}")
-
-# Register cleanup on app shutdown
-@app.on_event("shutdown")
-async def shutdown_event():
-    cleanup_servos()
+            print(f"  Error detaching servo {servo_id}: {e}")
+    
+    # Clear the dictionaries
+    servos.clear()
+    servo_states.clear()
 
 if __name__ == "__main__":
     try:
