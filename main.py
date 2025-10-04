@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 from gpiozero import Servo
 from typing import Dict, List, Optional
@@ -7,6 +7,8 @@ import warnings
 import time
 import threading
 import uvicorn
+import json
+import asyncio
 
 # Suppress gpiozero warnings for cleaner output
 warnings.filterwarnings("ignore", category=UserWarning, module="gpiozero")
@@ -14,10 +16,43 @@ warnings.filterwarnings("ignore", category=UserWarning, module="gpiozero")
 # GPIO pins array - add or remove pins as needed
 gpio_pins = [13, 6, 19, 26]
 
-# Global servo state tracking
+# Global state tracking
 servo_states = {}
 servos = {}
 servo_lock = threading.Lock()
+
+# WebSocket connection manager
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+
+    async def send_personal_message(self, message: str, websocket: WebSocket):
+        try:
+            await websocket.send_text(message)
+        except:
+            self.disconnect(websocket)
+
+    async def broadcast(self, message: str):
+        disconnected = []
+        for connection in self.active_connections:
+            try:
+                await connection.send_text(message)
+            except:
+                disconnected.append(connection)
+        
+        # Remove disconnected clients
+        for connection in disconnected:
+            self.disconnect(connection)
+
+manager = ConnectionManager()
 
 # Lifespan event handler for startup and shutdown
 @asynccontextmanager
@@ -112,6 +147,28 @@ def set_servo_angle(servo_id: int, angle: int, update_state: bool = True):
     
     time.sleep(0.5)  # Give servo time to reach target
 
+async def broadcast_servo_status():
+    """Broadcast current servo status to all connected WebSocket clients"""
+    try:
+        status_dict = {}
+        for servo_id, state in servo_states.items():
+            status_dict[str(servo_id)] = {
+                "servo_id": servo_id,
+                "gpio_pin": state["gpio_pin"],
+                "current_angle": state["current_angle"],
+                "is_active": state["is_active"],
+                "last_updated": state["last_updated"]
+            }
+        
+        message = json.dumps({
+            "type": "servo_status_update",
+            "data": {"servo": status_dict}
+        })
+        
+        await manager.broadcast(message)
+    except Exception as e:
+        print(f"Error broadcasting servo status: {e}")
+
 # API Endpoints
 
 @app.get("/", summary="API Information")
@@ -179,6 +236,8 @@ async def move_servo(servo_id: int, request: ServoMoveRequest) -> ServoResponse:
     
     try:
         set_servo_angle(servo_id, request.angle)
+        # Broadcast status update to WebSocket clients
+        await broadcast_servo_status()
         return ServoResponse(
             success=True,
             message=f"Servo {servo_id} moved to {request.angle}°",
@@ -204,6 +263,9 @@ async def move_all_servos(request: ServoMoveAllRequest) -> ServoResponse:
         except Exception as e:
             errors.append(f"Servo {servo_id}: {str(e)}")
     
+    # Broadcast status update to WebSocket clients
+    await broadcast_servo_status()
+    
     if errors:
         raise HTTPException(
             status_code=207,  # Multi-status
@@ -224,6 +286,8 @@ async def center_servo(servo_id: int) -> ServoResponse:
     
     try:
         set_servo_angle(servo_id, 90)
+        # Broadcast status update to WebSocket clients
+        await broadcast_servo_status()
         return ServoResponse(
             success=True,
             message=f"Servo {servo_id} centered at 90°",
@@ -249,6 +313,9 @@ async def center_all_servos() -> ServoResponse:
         except Exception as e:
             errors.append(f"Servo {servo_id}: {str(e)}")
     
+    # Broadcast status update to WebSocket clients
+    await broadcast_servo_status()
+    
     if errors:
         raise HTTPException(
             status_code=207,
@@ -260,6 +327,45 @@ async def center_all_servos() -> ServoResponse:
         message=f"All servos centered at 90°. Affected servos: {moved_servos}",
         angle=90
     )
+
+@app.websocket("/ws/servos/status")
+async def websocket_servo_status(websocket: WebSocket):
+    """WebSocket endpoint for real-time servo status updates"""
+    await manager.connect(websocket)
+    try:
+        # Send initial status when client connects
+        await broadcast_servo_status()
+        
+        # Keep connection alive and handle incoming messages
+        while True:
+            try:
+                # Wait for messages from client (ping/pong or requests)
+                data = await websocket.receive_text()
+                message = json.loads(data)
+                
+                # Handle different message types
+                if message.get("type") == "ping":
+                    await websocket.send_text(json.dumps({"type": "pong"}))
+                elif message.get("type") == "get_status":
+                    await broadcast_servo_status()
+                    
+            except WebSocketDisconnect:
+                break
+            except json.JSONDecodeError:
+                await websocket.send_text(json.dumps({
+                    "type": "error",
+                    "message": "Invalid JSON format"
+                }))
+            except Exception as e:
+                await websocket.send_text(json.dumps({
+                    "type": "error", 
+                    "message": f"Error: {str(e)}"
+                }))
+                
+    except WebSocketDisconnect:
+        pass
+    finally:
+        manager.disconnect(websocket)
 
 # Cleanup function
 def cleanup_servos():

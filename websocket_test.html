@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Servo Control WebSocket Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .status {
+            margin: 10px 0;
+            padding: 10px;
+            border-radius: 4px;
+        }
+        .connected { background-color: #d4edda; color: #155724; }
+        .disconnected { background-color: #f8d7da; color: #721c24; }
+        .servo-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin: 20px 0;
+        }
+        .servo-card {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 6px;
+            border: 1px solid #dee2e6;
+        }
+        .servo-card h3 {
+            margin: 0 0 10px 0;
+            color: #495057;
+        }
+        .servo-info {
+            font-size: 14px;
+            margin: 5px 0;
+        }
+        .active { color: #28a745; }
+        .inactive { color: #dc3545; }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        button:disabled {
+            background: #6c757d;
+            cursor: not-allowed;
+        }
+        .log {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            padding: 10px;
+            height: 200px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Servo Control WebSocket Test</h1>
+        
+        <div id="connectionStatus" class="status disconnected">
+            Disconnected
+        </div>
+        
+        <div>
+            <button id="connectBtn" onclick="connect()">Connect</button>
+            <button id="disconnectBtn" onclick="disconnect()" disabled>Disconnect</button>
+            <button onclick="requestStatus()">Request Status</button>
+            <button onclick="clearLog()">Clear Log</button>
+        </div>
+        
+        <h2>Servo Status</h2>
+        <div id="servoGrid" class="servo-grid">
+            <!-- Servo cards will be populated here -->
+        </div>
+        
+        <h2>WebSocket Log</h2>
+        <div id="log" class="log"></div>
+    </div>
+
+    <script>
+        let ws = null;
+        let servos = {};
+
+        function log(message) {
+            const logDiv = document.getElementById('log');
+            const timestamp = new Date().toLocaleTimeString();
+            logDiv.innerHTML += `[${timestamp}] ${message}\n`;
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        function updateConnectionStatus(connected) {
+            const statusDiv = document.getElementById('connectionStatus');
+            const connectBtn = document.getElementById('connectBtn');
+            const disconnectBtn = document.getElementById('disconnectBtn');
+            
+            if (connected) {
+                statusDiv.textContent = 'Connected to WebSocket';
+                statusDiv.className = 'status connected';
+                connectBtn.disabled = true;
+                disconnectBtn.disabled = false;
+            } else {
+                statusDiv.textContent = 'Disconnected';
+                statusDiv.className = 'status disconnected';
+                connectBtn.disabled = false;
+                disconnectBtn.disabled = true;
+            }
+        }
+
+        function updateServoDisplay(servoData) {
+            const grid = document.getElementById('servoGrid');
+            grid.innerHTML = '';
+            
+            for (const [servoId, servo] of Object.entries(servoData)) {
+                const card = document.createElement('div');
+                card.className = 'servo-card';
+                
+                const statusClass = servo.is_active ? 'active' : 'inactive';
+                const statusText = servo.is_active ? 'Active' : 'Inactive';
+                
+                card.innerHTML = `
+                    <h3>Servo ${servo.servo_id}</h3>
+                    <div class="servo-info">GPIO Pin: ${servo.gpio_pin}</div>
+                    <div class="servo-info">Current Angle: ${servo.current_angle || 'N/A'}°</div>
+                    <div class="servo-info">Status: <span class="${statusClass}">${statusText}</span></div>
+                    <div class="servo-info">Last Updated: ${servo.last_updated || 'Never'}</div>
+                `;
+                
+                grid.appendChild(card);
+            }
+        }
+
+        function connect() {
+            if (ws) {
+                ws.close();
+            }
+            
+            ws = new WebSocket('ws://localhost:8004/ws/servos/status');
+            
+            ws.onopen = function(event) {
+                log('Connected to WebSocket');
+                updateConnectionStatus(true);
+            };
+            
+            ws.onmessage = function(event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    log(`Received: ${JSON.stringify(data)}`);
+                    
+                    if (data.type === 'servo_status_update' && data.data && data.data.servo) {
+                        updateServoDisplay(data.data.servo);
+                    } else if (data.type === 'pong') {
+                        log('Received pong response');
+                    } else if (data.type === 'error') {
+                        log(`Error: ${data.message}`);
+                    }
+                } catch (e) {
+                    log(`Error parsing message: ${e.message}`);
+                }
+            };
+            
+            ws.onclose = function(event) {
+                log('WebSocket connection closed');
+                updateConnectionStatus(false);
+                ws = null;
+            };
+            
+            ws.onerror = function(error) {
+                log(`WebSocket error: ${error}`);
+            };
+        }
+
+        function disconnect() {
+            if (ws) {
+                ws.close();
+            }
+        }
+
+        function requestStatus() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                const message = JSON.stringify({ type: 'get_status' });
+                ws.send(message);
+                log('Sent status request');
+            } else {
+                log('WebSocket not connected');
+            }
+        }
+
+        function clearLog() {
+            document.getElementById('log').innerHTML = '';
+        }
+
+        // Auto-connect on page load
+        window.onload = function() {
+            log('Page loaded. Click Connect to start WebSocket connection.');
+        };
+    </script>
+</body>
+</html>
